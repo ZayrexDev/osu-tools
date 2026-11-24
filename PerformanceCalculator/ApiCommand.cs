@@ -35,10 +35,23 @@ namespace PerformanceCalculator
 
         protected T GetJsonFromApi<T>(string request, HttpMethod? method = null, Dictionary<string, string>? parameters = null)
         {
+            using var req = new JsonWebRequest<T>($"{Program.ENDPOINT_CONFIGURATION.APIUrl}/api/v2/{request}");
+            performApiRequest(req, method, parameters);
+            return req.ResponseObject;
+        }
+
+        protected string GetRawJsonFromApi(string request)
+        {
+            using var req = new WebRequest($"{Program.ENDPOINT_CONFIGURATION.APIUrl}/api/v2/{request}");
+            performApiRequest(req, HttpMethod.Get, null);
+            return req.GetResponseString()!;
+        }
+
+        private void performApiRequest(WebRequest req, HttpMethod? method, Dictionary<string, string>? parameters)
+        {
             var now = DateTimeOffset.Now;
             int apiVersion = now.Year * 10000 + now.Month * 100 + now.Day;
 
-            using var req = new JsonWebRequest<T>($"{Program.ENDPOINT_CONFIGURATION.APIUrl}/api/v2/{request}");
             req.Method = method ?? HttpMethod.Get;
             req.AddHeader("x-api-version", apiVersion.ToString(CultureInfo.InvariantCulture));
             req.AddHeader(nameof(System.Net.HttpRequestHeader.Authorization), $"Bearer {apiAccessToken}");
@@ -51,7 +64,6 @@ namespace PerformanceCalculator
 
             req.Perform();
 
-            return req.ResponseObject;
         }
 
         private void getAccessToken()

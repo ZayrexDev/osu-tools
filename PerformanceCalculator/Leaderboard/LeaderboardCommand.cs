@@ -11,6 +11,7 @@ using Newtonsoft.Json;
 using osu.Game.Online.API.Requests;
 using osu.Game.Online.API.Requests.Responses;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Scoring;
 
 namespace PerformanceCalculator.Leaderboard
 {

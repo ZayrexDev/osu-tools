@@ -9,9 +9,13 @@ using Alba.CsConsoleFormat;
 using JetBrains.Annotations;
 using McMaster.Extensions.CommandLineUtils;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using osu.Game.Online.API.Requests.Responses;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Rulesets.Osu.Difficulty;
 using osu.Game.Rulesets.Scoring;
+using osu.Game.Scoring;
+using osu.Game.Scoring.Legacy;
 
 namespace PerformanceCalculator.Profile
 {
@@ -28,6 +32,10 @@ namespace PerformanceCalculator.Profile
         [AllowedValues("0", "1", "2", "3")]
         public int? Ruleset { get; }
 
+        [UsedImplicitly]
+        [Option(Template = "--beatmap-cache <directory>", Description = "Directory for cached .osu files (default: ./cache).")]
+        public string? BeatmapCache { get; }
+
         private const int max_api_scores = 200;
         private const int max_api_scores_in_one_query = 100;
 
@@ -38,22 +46,22 @@ namespace PerformanceCalculator.Profile
             var ruleset = LegacyHelper.GetRulesetFromLegacyID(Ruleset ?? 0);
             string rulesetApiName = LegacyHelper.GetRulesetShortNameFromId(Ruleset ?? 0);
 
-            Console.WriteLine("Getting user data...");
             var userData = GetJsonFromApi<APIUser>($"users/{ProfileName}/{ruleset.ShortName}");
 
-            Console.WriteLine("Getting user top scores...");
-
-            var apiScores = new List<SoloScoreInfo>();
+            var apiScores = new List<JObject>();
+            var jsonSettings = new JsonSerializerSettings { DateParseHandling = DateParseHandling.None };
 
             for (int i = 0; i < max_api_scores; i += max_api_scores_in_one_query)
             {
-                apiScores.AddRange(GetJsonFromApi<List<SoloScoreInfo>>($"users/{userData.Id}/scores/best?mode={rulesetApiName}&limit={max_api_scores_in_one_query}&offset={i}"));
+                var page = GetRawJsonFromApi($"users/{userData.Id}/scores/best?mode={rulesetApiName}&limit={max_api_scores_in_one_query}&offset={i}");
+                apiScores.AddRange(JsonConvert.DeserializeObject<List<JObject>>(page, jsonSettings)!);
                 Thread.Sleep(200);
             }
 
-            foreach (var play in apiScores)
+            foreach (var rawScore in apiScores)
             {
-                var working = ProcessorWorkingBeatmap.FromFileOrId(play.BeatmapID.ToString());
+                var play = rawScore.ToObject<SoloScoreInfo>()!;
+                var working = ProcessorWorkingBeatmap.FromFileOrId(play.BeatmapID.ToString(), BeatmapCache);
 
                 Mod[] mods = play.Mods.Select(x => x.ToMod(ruleset)).ToArray();
 
@@ -68,10 +76,14 @@ namespace PerformanceCalculator.Profile
                 var thisPlay = new UserPlayInfo
                 {
                     Beatmap = working.BeatmapInfo,
+                    ApiScore = rawScore,
                     LocalPP = ppAttributes?.Total ?? 0,
+                    LocalStarRating = difficultyAttributes.StarRating,
+                    PerformanceBreakdown = ppAttributes,
                     LivePP = play.PP ?? 0.0,
                     Mods = scoreInfo.Mods.Select(m => m.Acronym).ToArray(),
                     MissCount = play.Statistics.GetValueOrDefault(HitResult.Miss),
+                    HitCounts = (scoreInfo.GetCount100() ?? 0, scoreInfo.GetCount300() ?? 0, scoreInfo.GetCount50() ?? 0),
                     Accuracy = scoreInfo.Accuracy * 100,
                     Combo = play.MaxCombo,
                     MaxCombo = difficultyAttributes.MaxCombo
@@ -83,8 +95,22 @@ namespace PerformanceCalculator.Profile
             var localOrdered = displayPlays.OrderByDescending(p => p.LocalPP).ToList();
             var liveOrdered = displayPlays.OrderByDescending(p => p.LivePP).ToList();
 
-            int index = 0;
-            double totalLocalPP = localOrdered.Sum(play => Math.Pow(0.95, index++) * play.LocalPP);
+            double totalLocalPP = 0;
+            double aim = 0, speed = 0, accuracy = 0, flashlight = 0, reading = 0;
+            for (int i = 0; i < localOrdered.Count; i++)
+            {
+                var play = localOrdered[i];
+                double weight = Math.Pow(0.95, i);
+                totalLocalPP += weight * play.LocalPP;
+                if (play.PerformanceBreakdown is OsuPerformanceAttributes attributes)
+                {
+                    aim += weight * attributes.Aim;
+                    speed += weight * attributes.Speed;
+                    accuracy += weight * attributes.Accuracy;
+                    flashlight += weight * attributes.Flashlight;
+                    reading += weight * attributes.Reading;
+                }
+            }
             double totalLivePP = (double)(userData.Statistics.PP ?? 0);
 
             // https://github.com/ppy/osu-queue-score-statistics/blob/842653412d66eef527f7b7067b7cf50e886de954/osu.Server.Queues.ScoreStatisticsProcessor/Helpers/UserTotalPerformanceAggregateHelper.cs#L36-L38
@@ -102,16 +128,26 @@ namespace PerformanceCalculator.Profile
                     LivePp = totalLivePP,
                     LocalPp = totalLocalPP,
                     PlaycountPp = playcountBonusPP,
+                    WeightedPerformanceBreakdown = (Ruleset ?? 0) == 0 ? new { aim, speed, accuracy, flashlight, reading } : null,
                     Scores = localOrdered.Select(item => new
                     {
+                        LiveId = item.ApiScore["id"],
+                        EndedAt = item.ApiScore["ended_at"],
+                        Weight = item.ApiScore["weight"],
                         BeatmapId = item.Beatmap.OnlineID,
                         BeatmapName = item.Beatmap.ToString(),
                         item.Combo,
+                        Rank = item.ApiScore["rank"],
                         item.Accuracy,
                         item.MissCount,
+                        item.HitCounts.Count100,
+                        item.HitCounts.Count300,
+                        item.HitCounts.Count50,
                         item.Mods,
                         LivePp = item.LivePP,
                         LocalPp = item.LocalPP,
+                        item.LocalStarRating,
+                        item.PerformanceBreakdown,
                         PositionChange = liveOrdered.IndexOf(item) - localOrdered.IndexOf(item)
                     })
                 });

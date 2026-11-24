@@ -48,7 +48,7 @@ namespace PerformanceCalculator
                 return Decoder.GetDecoder<Beatmap>(reader).Decode(reader);
         }
 
-        public static ProcessorWorkingBeatmap FromFileOrId(string fileOrId)
+        public static ProcessorWorkingBeatmap FromFileOrId(string fileOrId, string? cacheDirectory = null)
         {
             if (fileOrId.EndsWith(".osu", StringComparison.Ordinal))
             {
@@ -61,10 +61,11 @@ namespace PerformanceCalculator
             if (!int.TryParse(fileOrId, out int beatmapId))
                 throw new ArgumentException("Could not parse provided beatmap ID.");
 
-            string cachePath = Path.Combine("cache", $"{beatmapId}.osu");
+            string cachePath = Path.Combine(cacheDirectory ?? "cache", $"{beatmapId}.osu");
 
             if (!File.Exists(cachePath))
             {
+                Directory.CreateDirectory(cacheDirectory ?? "cache");
                 Console.WriteLine($"Downloading {beatmapId}.osu...");
                 new FileWebRequest(cachePath, $"{Program.ENDPOINT_CONFIGURATION.WebsiteUrl}/osu/{beatmapId}").Perform();
             }
